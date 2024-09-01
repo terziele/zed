@@ -525,7 +525,7 @@ features = [
 
 [profile.dev]
 split-debuginfo = "unpacked"
-debug = "full"
+debug = "limited"
 codegen-units = 16
 
 [profile.dev.package]
