@@ -35,8 +35,8 @@ use language::{
     range_from_lsp, Bias, Buffer, BufferSnapshot, CachedLspAdapter, CodeLabel, Diagnostic,
     DiagnosticEntry, DiagnosticSet, Documentation, File as _, Language, LanguageConfig,
     LanguageMatcher, LanguageName, LanguageRegistry, LanguageServerName, LocalFile, LspAdapter,
-    LspAdapterDelegate, Patch, PendingLanguageServer, PointUtf16, TextBufferSnapshot, ToOffset,
-    ToPointUtf16, Transaction, Unclipped, Point
+    LspAdapterDelegate, Patch, PendingLanguageServer, Point, PointUtf16, TextBufferSnapshot,
+    ToOffset, ToPointUtf16, Transaction, Unclipped,
 };
 use lsp::{
     CodeActionKind, CompletionContext, DiagnosticSeverity, DiagnosticTag,

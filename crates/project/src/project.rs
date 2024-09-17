@@ -51,8 +51,8 @@ use language::{
         split_operations,
     },
     Buffer, BufferEvent, CachedLspAdapter, Capability, CodeLabel, ContextProvider, DiagnosticEntry,
-    Diff, Documentation, File as _, Language, LanguageRegistry, LanguageServerName, PointUtf16,
-    ToOffset, ToPointUtf16, Transaction, Unclipped, Point
+    Diff, Documentation, File as _, Language, LanguageRegistry, LanguageServerName, Point,
+    PointUtf16, ToOffset, ToPointUtf16, Transaction, Unclipped,
 };
 use lsp::{CompletionContext, DocumentHighlightKind, LanguageServer, LanguageServerId};
 use lsp_command::*;

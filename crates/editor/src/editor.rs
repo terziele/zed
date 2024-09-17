@@ -119,7 +119,7 @@ use parking_lot::{Mutex, RwLock};
 use project::project_settings::{GitGutterSetting, ProjectSettings};
 use project::{
     CodeAction, Completion, CompletionIntent, FormatTrigger, FormatType, Item, Location, Project,
-    ProjectPath, ProjectTransaction, TaskSourceKind, WorktreeId,
+    ProjectPath, ProjectTransaction, TaskSourceKind,
 };
 use rand::prelude::*;
 use rpc::{proto::*, ErrorExt};
