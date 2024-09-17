@@ -118,8 +118,8 @@ use ordered_float::OrderedFloat;
 use parking_lot::{Mutex, RwLock};
 use project::project_settings::{GitGutterSetting, ProjectSettings};
 use project::{
-    CodeAction, Completion, CompletionIntent, FormatTrigger, Item, Location, Project, ProjectPath,
-    ProjectTransaction, TaskSourceKind,
+    CodeAction, Completion, CompletionIntent, FormatTrigger, FormatType, Item, Location, Project,
+    ProjectPath, ProjectTransaction, TaskSourceKind,
 };
 use rand::prelude::*;
 use rpc::{proto::*, ErrorExt};
@@ -10167,7 +10167,7 @@ impl Editor {
             None => return None,
         };
 
-        Some(self.perform_format(project, FormatTrigger::Manual, cx))
+        Some(self.perform_format(project, FormatTrigger::Manual, FormatType::Buffer, cx))
     }
 
     fn format_selection(
@@ -10180,13 +10180,25 @@ impl Editor {
             None => return None,
         };
 
-        Some(self.perform_format(project, FormatTrigger::Manual, cx))
+        let selections = self
+            .selections
+            .all(cx)
+            .into_iter()
+            .filter(|s| s.start != s.end)
+            .collect();
+        Some(self.perform_format(
+            project,
+            FormatTrigger::Manual,
+            FormatType::Selection(selections),
+            cx,
+        ))
     }
 
     fn perform_format(
         &mut self,
         project: Model<Project>,
         trigger: FormatTrigger,
+        format_type: FormatType,
         cx: &mut ViewContext<Self>,
     ) -> Task<Result<()>> {
         let buffer = self.buffer().clone();
@@ -10195,15 +10207,10 @@ impl Editor {
             buffers.retain(|buffer| buffer.read(cx).is_dirty());
         }
 
-        let selections = self
-            .selections
-            .all(cx)
-            .into_iter()
-            .filter(|s| s.start != s.end)
-            .collect();
         let mut timeout = cx.background_executor().timer(FORMAT_TIMEOUT).fuse();
+
         let format = project.update(cx, |project, cx| {
-            project.format(buffers, true, trigger, selections, cx)
+            project.format(buffers, true, trigger, format_type, cx)
         });
 
         cx.spawn(|_, mut cx| async move {

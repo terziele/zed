@@ -35,8 +35,8 @@ use language::{
     range_from_lsp, Bias, Buffer, BufferSnapshot, CachedLspAdapter, CodeLabel, Diagnostic,
     DiagnosticEntry, DiagnosticSet, Documentation, File as _, Language, LanguageConfig,
     LanguageMatcher, LanguageName, LanguageRegistry, LanguageServerName, LocalFile, LspAdapter,
-    LspAdapterDelegate, Patch, PendingLanguageServer, PointUtf16, TextBufferSnapshot, ToOffset,
-    ToPointUtf16, Transaction, Unclipped,
+    LspAdapterDelegate, Patch, PendingLanguageServer, Point, PointUtf16, TextBufferSnapshot,
+    ToOffset, ToPointUtf16, Transaction, Unclipped,
 };
 use lsp::{
     CodeActionKind, CompletionContext, DiagnosticSeverity, DiagnosticTag,
@@ -69,7 +69,7 @@ use std::{
     sync::{atomic::Ordering::SeqCst, Arc},
     time::{Duration, Instant},
 };
-use text::{Anchor, BufferId, LineEnding};
+use text::{Anchor, BufferId, LineEnding, Selection};
 use util::{
     debug_panic, defer, maybe, merge_json_value_into, post_inc, ResultExt, TryFutureExt as _,
 };
@@ -1218,10 +1218,9 @@ impl LspStore {
         } else if matches!(range_formatting_provider, Some(p) if *p != OneOf::Left(false)) {
             let buffer_start = lsp::Position::new(0, 0);
             let buffer_end = buffer.update(cx, |b, _| point_to_lsp(b.max_point_utf16()))?;
-
             language_server
                 .request::<lsp::request::RangeFormatting>(lsp::DocumentRangeFormattingParams {
-                    text_document,
+                    text_document: text_document.clone(),
                     range: lsp::Range::new(buffer_start, buffer_end),
                     options: lsp_command::lsp_formatting_options(settings),
                     work_done_progress_params: Default::default(),
@@ -1237,7 +1236,68 @@ impl LspStore {
             })?
             .await
         } else {
-            Ok(Vec::new())
+            Ok(Vec::with_capacity(0))
+        }
+    }
+
+    pub async fn format_range(
+        this: &WeakModel<Self>,
+        buffer: &Model<Buffer>,
+        abs_path: &Path,
+        language_server: &Arc<LanguageServer>,
+        settings: &LanguageSettings,
+        selections: &[Selection<Point>],
+        cx: &mut AsyncAppContext,
+    ) -> Result<Vec<(Range<Anchor>, String)>> {
+        let uri = lsp::Url::from_file_path(abs_path)
+            .map_err(|_| anyhow!("failed to convert abs path to uri"))?;
+        let text_document = lsp::TextDocumentIdentifier::new(uri);
+        let capabilities = &language_server.capabilities();
+        let range_formatting_provider = capabilities.document_range_formatting_provider.as_ref();
+
+        let lsp_edits = if matches!(range_formatting_provider, Some(p) if *p != OneOf::Left(false))
+        {
+            let ranges = if selections.is_empty() {
+                let buffer_start = lsp::Position::new(0, 0);
+                let buffer_end = buffer.update(cx, |b, _| point_to_lsp(b.max_point_utf16()))?;
+                vec![(buffer_start, buffer_end)]
+            } else {
+                selections
+                    .into_iter()
+                    .map(|selection| {
+                        (
+                            lsp::Position::new(selection.start.row, selection.start.column),
+                            lsp::Position::new(selection.end.row, selection.end.column),
+                        )
+                    })
+                    .collect()
+            };
+
+            let mut text_edits = None;
+            for (buffer_start, buffer_end) in ranges {
+                if let Some(mut edits) = language_server
+                    .request::<lsp::request::RangeFormatting>(lsp::DocumentRangeFormattingParams {
+                        text_document: text_document.clone(),
+                        range: lsp::Range::new(buffer_start, buffer_end),
+                        options: lsp_command::lsp_formatting_options(settings),
+                        work_done_progress_params: Default::default(),
+                    })
+                    .await?
+                {
+                    text_edits.get_or_insert_with(Vec::new).append(&mut edits)
+                };
+            }
+            text_edits
+        } else {
+            None
+        };
+        if let Some(lsp_edits) = lsp_edits {
+            this.update(cx, |this, cx| {
+                this.edits_from_lsp(buffer, lsp_edits, language_server.server_id(), None, cx)
+            })?
+            .await
+        } else {
+            Ok(Vec::with_capacity(0))
         }
     }
 

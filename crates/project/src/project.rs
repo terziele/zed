@@ -51,8 +51,8 @@ use language::{
         split_operations,
     },
     Buffer, BufferEvent, CachedLspAdapter, Capability, CodeLabel, ContextProvider, DiagnosticEntry,
-    Diff, Documentation, File as _, Language, LanguageRegistry, LanguageServerName, PointUtf16,
-    ToOffset, ToPointUtf16, Transaction, Unclipped,
+    Diff, Documentation, File as _, Language, LanguageRegistry, LanguageServerName, Point,
+    PointUtf16, ToOffset, ToPointUtf16, Transaction, Unclipped,
 };
 use lsp::{CompletionContext, DocumentHighlightKind, LanguageServer, LanguageServerId};
 use lsp_command::*;
@@ -82,7 +82,7 @@ use task::{
     HideStrategy, RevealStrategy, Shell, TaskContext, TaskTemplate, TaskVariables, VariableName,
 };
 use terminals::Terminals;
-use text::{Anchor, BufferId};
+use text::{Anchor, BufferId, Selection};
 use util::{defer, paths::compare_paths, ResultExt as _};
 use worktree::{CreatedEntry, Snapshot, Traversal};
 use worktree_store::{WorktreeStore, WorktreeStoreEvent};
@@ -483,6 +483,11 @@ pub enum FormatTrigger {
     Manual,
 }
 
+#[derive(Debug, Clone)]
+pub enum FormatType {
+    Buffer,
+    Selection(Vec<Selection<Point>>),
+}
 // Currently, formatting operations are represented differently depending on
 // whether they come from a language server or an external command.
 #[derive(Debug)]
@@ -2622,6 +2627,7 @@ impl Project {
         buffers: HashSet<Model<Buffer>>,
         push_to_history: bool,
         trigger: FormatTrigger,
+        format_type: FormatType,
         cx: &mut ModelContext<Project>,
     ) -> Task<anyhow::Result<ProjectTransaction>> {
         if self.is_local_or_ssh() {
@@ -2641,6 +2647,7 @@ impl Project {
                     buffers_with_paths,
                     push_to_history,
                     trigger,
+                    format_type,
                     cx.clone(),
                 )
                 .await;
@@ -2692,6 +2699,7 @@ impl Project {
         mut buffers_with_paths: Vec<(Model<Buffer>, Option<PathBuf>)>,
         push_to_history: bool,
         trigger: FormatTrigger,
+        format_type: FormatType,
         mut cx: AsyncAppContext,
     ) -> anyhow::Result<ProjectTransaction> {
         // Do not allow multiple concurrent formatting requests for the
@@ -2817,6 +2825,7 @@ impl Project {
                                             if prettier_settings.allowed {
                                                 Self::perform_format(
                                                     &Formatter::Prettier,
+                                                    &format_type,
                                                     server_and_buffer,
                                                     project.clone(),
                                                     buffer,
@@ -2829,8 +2838,18 @@ impl Project {
                                                 )
                                                 .await
                                             } else {
+                                                let formatter = primary_language_server
+                                                    .as_ref()
+                                                    .map(|l| Formatter::LanguageServer {
+                                                        name: Some(l.name().to_string()),
+                                                    })
+                                                    .unwrap_or_else(|| Formatter::LanguageServer {
+                                                        name: None,
+                                                    });
+
                                                 Self::perform_format(
-                                                    &Formatter::LanguageServer { name: None },
+                                                    &formatter,
+                                                    &format_type,
                                                     server_and_buffer,
                                                     project.clone(),
                                                     buffer,
@@ -2854,6 +2873,7 @@ impl Project {
                                         for formatter in formatters.as_ref() {
                                             let diff = Self::perform_format(
                                                 formatter,
+                                                &format_type,
                                                 server_and_buffer,
                                                 project.clone(),
                                                 buffer,
@@ -2880,6 +2900,7 @@ impl Project {
                                 for formatter in formatters.as_ref() {
                                     let diff = Self::perform_format(
                                         formatter,
+                                        &format_type,
                                         server_and_buffer,
                                         project.clone(),
                                         buffer,
@@ -2908,6 +2929,7 @@ impl Project {
                                     if prettier_settings.allowed {
                                         Self::perform_format(
                                             &Formatter::Prettier,
+                                            &format_type,
                                             server_and_buffer,
                                             project.clone(),
                                             buffer,
@@ -2920,8 +2942,18 @@ impl Project {
                                         )
                                         .await
                                     } else {
+                                        let formatter = primary_language_server
+                                            .as_ref()
+                                            .map(|l| Formatter::LanguageServer {
+                                                name: Some(l.name().to_string()),
+                                            })
+                                            .unwrap_or_else(|| Formatter::LanguageServer {
+                                                name: None,
+                                            });
+
                                         Self::perform_format(
-                                            &Formatter::LanguageServer { name: None },
+                                            &formatter,
+                                            &format_type,
                                             server_and_buffer,
                                             project.clone(),
                                             buffer,
@@ -2947,6 +2979,7 @@ impl Project {
                                     // format with formatter
                                     let diff = Self::perform_format(
                                         formatter,
+                                        &format_type,
                                         server_and_buffer,
                                         project.clone(),
                                         buffer,
@@ -3019,6 +3052,7 @@ impl Project {
     #[allow(clippy::too_many_arguments)]
     async fn perform_format(
         formatter: &Formatter,
+        format_type: &FormatType,
         primary_server_and_buffer: Option<(&Arc<LanguageServer>, &PathBuf)>,
         project: WeakModel<Project>,
         buffer: &Model<Buffer>,
@@ -3044,27 +3078,49 @@ impl Project {
                     };
 
                     let lsp_store = project.update(cx, |p, _| p.lsp_store.downgrade())?;
-                    Some(FormatOperation::Lsp(
-                        LspStore::format_via_lsp(
-                            &lsp_store,
-                            buffer,
-                            buffer_abs_path,
-                            language_server,
-                            settings,
-                            cx,
-                        )
-                        .await
-                        .context("failed to format via language server")?,
-                    ))
+                    match format_type {
+                        FormatType::Buffer => Some(FormatOperation::Lsp(
+                            LspStore::format_via_lsp(
+                                &lsp_store,
+                                buffer,
+                                buffer_abs_path,
+                                language_server,
+                                settings,
+                                cx,
+                            )
+                            .await
+                            .context("failed to format via language server")?,
+                        )),
+                        FormatType::Selection(selections) => Some(FormatOperation::Lsp(
+                            LspStore::format_range(
+                                &lsp_store,
+                                buffer,
+                                buffer_abs_path,
+                                language_server,
+                                settings,
+                                &selections,
+                                cx,
+                            )
+                            .await
+                            .context("failed to format range via language server")?,
+                        )),
+                    }
                 } else {
                     None
                 }
             }
-            Formatter::Prettier => prettier_support::format_with_prettier(&project, buffer, cx)
-                .await
-                .transpose()
-                .ok()
-                .flatten(),
+            Formatter::Prettier => {
+                let selection = if let FormatType::Selection(selection) = format_type {
+                    selection.first()
+                } else {
+                    None
+                };
+                prettier_support::format_with_prettier(&project, buffer, selection, cx)
+                    .await
+                    .transpose()
+                    .ok()
+                    .flatten()
+            }
             Formatter::External { command, arguments } => {
                 let buffer_abs_path = buffer_abs_path.as_ref().map(|path| path.as_path());
                 Self::format_via_external_command(buffer, buffer_abs_path, command, arguments, cx)
@@ -4370,7 +4426,7 @@ impl Project {
                 buffers.insert(this.buffer_store.read(cx).get_existing(buffer_id)?);
             }
             let trigger = FormatTrigger::from_proto(envelope.payload.trigger);
-            Ok::<_, anyhow::Error>(this.format(buffers, false, trigger, cx))
+            Ok::<_, anyhow::Error>(this.format(buffers, false, trigger, FormatType::Buffer, cx))
         })??;
 
         let project_transaction = format.await?;
